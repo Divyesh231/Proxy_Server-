@@ -42,3 +42,63 @@ int cache_get(const char *key, char **data, size_t *length) {
     pthread_mutex_unlock(&cache_lock);
     return found;
 } 
+
+void cache_put(const char *key, const char *data, size_t length)
+{
+    pthread_mutex_lock(&cache_lock);
+
+    int slot = -1;
+    time_t oldest = 0;
+
+    for (int i = 0; i < CACHE_ENTRIES; i++) 
+    {
+        if (entries[i].key && strcmp(entries[i].key, key) == 0) 
+        {
+            slot = i;
+            break;
+        }
+
+        if (!entries[i].key) 
+        {
+            slot = i;
+            break;
+        }
+
+        if (slot < 0 || entries[i].stored_at < oldest) 
+        {
+            slot = i;
+            oldest = entries[i].stored_at;
+        }
+    }
+    if (slot >= 0) 
+    {
+        char *new_key = strdup(key);
+        char *new_data = malloc(length);
+        if (new_key && new_data) 
+        {
+            memcpy(new_data, data, length);
+
+            free(entries[slot].key);
+            free(entries[slot].data);
+
+            entries[slot] = (CacheEntry){
+                new_key,
+                new_data,
+                length,
+                time(NULL)
+            };
+        } 
+        else 
+        {
+            free(new_key);
+            free(new_data);
+        }
+    }
+
+    pthread_mutex_unlock(&cache_lock);
+}
+
+void cache_free_copy(char *data)
+{
+    free(data);
+}
