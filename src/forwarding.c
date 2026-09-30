@@ -159,4 +159,42 @@ static void tunnel(int client, int remote)
             send_all(dst, b, (size_t)n) != 0)
             break;
     }
+
+    static int has_token_ci(const char *text, const char *token)
+    {
+        size_t n = strlen(token);
+
+        for (const char *p = text; *p; p++)
+            if (strncasecmp(p, token, n) == 0)
+                return 1;
+
+        return 0;
+    }
+
+    static int cacheable_response(const char *response, size_t length)
+    {
+        const char *end = strstr(response, "\r\n\r\n");
+
+        if (!end || (size_t)(end - response) >= length)
+            return 0;
+
+        if (strncmp(response, "HTTP/1.0 200", 12) &&
+            strncmp(response, "HTTP/1.1 200", 12))
+            return 0;
+
+        size_t n = (size_t)(end - response);
+
+        if (n >= 8192)
+            return 0;
+
+        char h[8192];
+
+        memcpy(h, response, n);
+        h[n] = '\0';
+
+        return !(has_token_ci(h, "set-cookie:") ||
+                 has_token_ci(h, "cache-control:") ||
+                 has_token_ci(h, "expires:") ||
+                 has_token_ci(h, "vary:"));
+    }
 }
