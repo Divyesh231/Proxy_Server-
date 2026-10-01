@@ -159,42 +159,254 @@ static void tunnel(int client, int remote)
             send_all(dst, b, (size_t)n) != 0)
             break;
     }
+}
 
-    static int has_token_ci(const char *text, const char *token)
-    {
-        size_t n = strlen(token);
 
-        for (const char *p = text; *p; p++)
-            if (strncasecmp(p, token, n) == 0)
-                return 1;
+static int has_token_ci(const char *text, const char *token)
+{
+    size_t n = strlen(token);
+
+    for (const char *p = text; *p; p++)
+        if (strncasecmp(p, token, n) == 0)
+            return 1;
+
+    return 0;
+}
+
+
+static int cacheable_response(const char *response, size_t length)
+{
+    const char *end = strstr(response, "\r\n\r\n");
+
+    if (!end || (size_t)(end - response) >= length)
+        return 0;
+
+    if (strncmp(response, "HTTP/1.0 200", 12) &&
+        strncmp(response, "HTTP/1.1 200", 12))
+        return 0;
+
+    size_t n = (size_t)(end - response);
+
+    if (n >= 8192)
+        return 0;
+
+    char h[8192];
+
+    memcpy(h, response, n);
+    h[n] = '\0';
+
+    return !(has_token_ci(h, "set-cookie:") ||
+             has_token_ci(h, "cache-control:") ||
+             has_token_ci(h, "expires:") ||
+             has_token_ci(h, "vary:"));
+}
+int forward_request(int client_fd, const char *raw, const HttpRequest *request)
+{
+    int remote = connect_destination(request->host, request->port);
+
+    if (remote < 0) {
+        const char *body = "Destination unavailable";
+        char e[256];
+
+        int size = snprintf(
+            e,
+            sizeof(e),
+            "HTTP/1.1 502 Bad Gateway\r\n"
+            "Connection: close\r\n"
+            "Content-Length: %zu\r\n"
+            "\r\n"
+            "%s",
+            strlen(body),
+            body
+        );
+
+        if (size > 0)
+            send_all(client_fd, e, (size_t)size);
+
+        log_event(
+            "FORWARD_ERROR",
+            "-",
+            request->host,
+            "Destination connection failed or timed out"
+        );
+
+        return -1;
+    }
+
+    if (request->is_connect) {
+        const char *ok =
+            "HTTP/1.1 200 Connection Established\r\n\r\n";
+
+        if (send_all(client_fd, ok, strlen(ok)) == 0)
+            tunnel(client_fd, remote);
+
+        close(remote);
+
+        log_event(
+            "TUNNEL",
+            "-",
+            request->host,
+            "HTTPS CONNECT ended"
+        );
 
         return 0;
     }
 
-    static int cacheable_response(const char *response, size_t length)
-    {
-        const char *end = strstr(response, "\r\n\r\n");
+    const char *line_end = strstr(raw, "\r\n");
 
-        if (!end || (size_t)(end - response) >= length)
-            return 0;
-
-        if (strncmp(response, "HTTP/1.0 200", 12) &&
-            strncmp(response, "HTTP/1.1 200", 12))
-            return 0;
-
-        size_t n = (size_t)(end - response);
-
-        if (n >= 8192)
-            return 0;
-
-        char h[8192];
-
-        memcpy(h, response, n);
-        h[n] = '\0';
-
-        return !(has_token_ci(h, "set-cookie:") ||
-                 has_token_ci(h, "cache-control:") ||
-                 has_token_ci(h, "expires:") ||
-                 has_token_ci(h, "vary:"));
+    if (!line_end) {
+        close(remote);
+        return -1;
     }
+
+    char host_value[320];
+
+    if (strcmp(request->port, "80") != 0) {
+        if (strchr(request->host, ':'))
+            snprintf(
+                host_value,
+                sizeof(host_value),
+                "[%s]:%s",
+                request->host,
+                request->port
+            );
+        else
+            snprintf(
+                host_value,
+                sizeof(host_value),
+                "%s:%s",
+                request->host,
+                request->port
+            );
+    }
+    else
+        snprintf(
+            host_value,
+            sizeof(host_value),
+            "%s",
+            request->host
+        );
+
+    char outgoing[REQUEST_SIZE + 512];
+
+    int used = snprintf(
+        outgoing,
+        sizeof(outgoing),
+        "%s %s HTTP/1.1\r\n"
+        "Host: %s\r\n",
+        request->method,
+        request->path,
+        host_value
+    );
+
+    const char *cursor = line_end + 2;
+
+    while (used > 0 && (size_t)used < sizeof(outgoing)) {
+        const char *end = strstr(cursor, "\r\n");
+
+        if (!end || end == cursor)
+            break;
+
+        size_t len = (size_t)(end - cursor);
+
+        if (strncasecmp(cursor, "Host:", 5) &&
+            strncasecmp(cursor, "Connection:", 11) &&
+            strncasecmp(cursor, "Proxy-Connection:", 17) &&
+            strncasecmp(cursor, "Keep-Alive:", 11)) {
+
+            if ((size_t)used + len + 2 >= sizeof(outgoing))
+                break;
+
+            memcpy(outgoing + used, cursor, len);
+            used += (int)len;
+
+            memcpy(outgoing + used, "\r\n", 2);
+            used += 2;
+        }
+
+        cursor = end + 2;
+    }
+
+    const char *closing = "Connection: close\r\n\r\n";
+    size_t closing_len = strlen(closing);
+
+    if ((size_t)used + closing_len >= sizeof(outgoing)) {
+        close(remote);
+        return -1;
+    }
+
+    memcpy(outgoing + used, closing, closing_len);
+    used += (int)closing_len;
+
+    if (send_all(remote, outgoing, (size_t)used) != 0) {
+        close(remote);
+        return -1;
+    }
+
+    char *saved = malloc(MAX_CACHEABLE_RESPONSE);
+    size_t saved_len = 0;
+    int cache_ok = saved != NULL;
+    char b[RESPONSE_SIZE];
+    ssize_t n;
+
+    while ((n = recv(remote, b, sizeof(b), 0)) > 0) {
+        if (send_all(client_fd, b, (size_t)n) != 0) {
+            cache_ok = 0;
+            break;
+        }
+
+        if (cache_ok &&
+            saved_len + (size_t)n <= MAX_CACHEABLE_RESPONSE) {
+
+            memcpy(
+                saved + saved_len,
+                b,
+                (size_t)n
+            );
+
+            saved_len += (size_t)n;
+        }
+        else
+            cache_ok = 0;
+    }
+
+    close(remote);
+
+    if (cache_ok &&
+        saved_len &&
+        strcmp(request->method, "GET") == 0 &&
+        !has_token_ci(raw, "authorization:") &&
+        !has_token_ci(raw, "cookie:") &&
+        !has_token_ci(raw, "cache-control:") &&
+        !has_token_ci(raw, "pragma: no-cache") &&
+        cacheable_response(saved, saved_len)) {
+
+        char key[4600];
+
+        snprintf(
+            key,
+            sizeof(key),
+            "%s:%s%s",
+            request->host,
+            request->port,
+            request->path
+        );
+
+        cache_put(
+            key,
+            saved,
+            saved_len
+        );
+    }
+
+    free(saved);
+
+    log_event(
+        "FORWARDED",
+        "-",
+        request->host,
+        request->path
+    );
+
+    return 0;
 }
