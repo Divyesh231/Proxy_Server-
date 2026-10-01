@@ -22,3 +22,32 @@ static int contains_ci(const char *text, const char *needle) {
     for (const char *p = text; *p; p++) if (strncasecmp(p, needle, n) == 0) return 1;
     return 0;
 }
+
+static int send_error(
+    int fd,
+    int status,
+    const char *reason,
+    const char *message
+)
+{
+    char response[512];
+
+    int size = snprintf(
+        response,
+        sizeof(response),
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: text/plain\r\n"
+        "Connection: close\r\n"
+        "Content-Length: %zu\r\n"
+        "\r\n"
+        "%s",
+        status,
+        reason,
+        strlen(message),
+        message
+    );
+
+    return size > 0
+        ? (int)send(fd, response, (size_t)size, 0)
+        : -1;
+}
