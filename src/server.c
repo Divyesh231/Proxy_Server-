@@ -141,3 +141,81 @@ static void *handle_client(void *argument) {
         close(fd);
         return NULL;
     }
+
+    int request_bypass_cache =
+        contains_ci(raw, "cache-control: no-cache") ||
+        contains_ci(raw, "cache-control: no-store") ||
+        contains_ci(raw, "cache-control: max-age=0") ||
+        contains_ci(raw, "pragma: no-cache") ||
+        contains_ci(raw, "authorization:") ||
+        contains_ci(raw, "cookie:");
+
+    if (!request.is_connect &&
+        strcmp(request.method, "GET") == 0 &&
+        !request_bypass_cache) {
+
+        char key[4600];
+        snprintf(
+            key,
+            sizeof(key),
+            "%s:%s%s",
+            request.host,
+            request.port,
+            request.path
+        );
+
+        char *cached = NULL;
+        size_t cached_length = 0;
+
+        if (cache_get(key, &cached, &cached_length)) {
+            size_t sent = 0;
+
+            while (sent < cached_length) {
+                ssize_t n = send(
+                    fd,
+                    cached + sent,
+                    cached_length - sent,
+                    0
+                );
+
+                if (n <= 0)
+                    break;
+
+                sent += (size_t)n;
+            }
+
+            cache_free_copy(cached);
+            log_event(
+                "CACHE_HIT",
+                client_address,
+                request.host,
+                request.path
+            );
+
+            close(fd);
+            return NULL;
+        }
+
+        log_event(
+            "CACHE_MISS",
+            client_address,
+            request.host,
+            request.path
+        );
+
+    } else if (!request.is_connect &&
+               strcmp(request.method, "GET") == 0) {
+
+        log_event(
+            "CACHE_BYPASS",
+            client_address,
+            request.host,
+            "Client requested revalidation or no storage"
+        );
+    }
+
+    forward_request(fd, raw, &request);
+    close(fd);
+
+    return NULL;
+}
