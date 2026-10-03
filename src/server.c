@@ -219,3 +219,35 @@ static void *handle_client(void *argument) {
 
     return NULL;
 }
+
+int main(void)
+{
+    signal(SIGPIPE, SIG_IGN);
+
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0)
+    {
+        perror("socket");
+        return EXIT_FAILURE;
+    }
+
+    int enabled = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled));
+
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof(address));
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(PROXY_PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0 ||
+        listen(server_fd, 64) < 0)
+    {
+        perror("bind/listen");
+        close(server_fd);
+        return EXIT_FAILURE;
+    }
+
+    printf("HTTP proxy listening on port %d\n", PROXY_PORT);
+    log_event("START", "-", "-", "Proxy started");
