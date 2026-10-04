@@ -251,3 +251,48 @@ int main(void)
 
     printf("HTTP proxy listening on port %d\n", PROXY_PORT);
     log_event("START", "-", "-", "Proxy started");
+
+    for (;;)
+    {
+        struct sockaddr_storage peer;
+        socklen_t peer_len = sizeof(peer);
+
+        int fd = accept(server_fd, (struct sockaddr *)&peer, &peer_len);
+
+        if (fd < 0)
+        {
+            if (errno == EINTR)
+                continue;
+
+            perror("accept");
+            continue;
+        }
+
+        ClientInfo *info = calloc(1, sizeof(*info));
+
+        if (!info)
+        {
+            close(fd);
+            continue;
+        }
+
+        info->fd = fd;
+
+        if (peer.ss_family == AF_INET)
+            inet_ntop(AF_INET, &((struct sockaddr_in *)&peer)->sin_addr,
+                      info->address, sizeof(info->address));
+        else
+            inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&peer)->sin6_addr,
+                      info->address, sizeof(info->address));
+
+        pthread_t thread;
+
+        if (pthread_create(&thread, NULL, handle_client, info) == 0)
+            pthread_detach(thread);
+        else
+        {
+            close(fd);
+            free(info);
+        }
+    }
+}
