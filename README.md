@@ -18,7 +18,7 @@ Press Ctrl+C in the first terminal to stop it. The log is written to logs/proxy.
 
 From the repository root, run:
 
-    bash tests/local_smoke_test.sh
+    make test
 
 It starts a temporary local web server and checks HTTP forwarding, cache miss/hit, five simultaneous requests, and a blocked-host 403 response. It restores the block-list and log files afterward.
 

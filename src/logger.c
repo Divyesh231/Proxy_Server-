@@ -16,7 +16,7 @@ void log_event(const char *event, const char *client, const char *host, const ch
         char stamp[32] = "unknown-time";
 
         if (localtime_r(&now, &tm_now))
-            strftime(stamp, sizeof(stamp), "*%*&#x59;-*%*&#x6D;-%d *%*&#x48;:*%*&#x4D;:%S", &tm_now);
+            strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm_now);
 
         fprintf(file, "[%s] %-12s client=%s host=%s detail=%s\n",
                 stamp, event, client, host, detail);
